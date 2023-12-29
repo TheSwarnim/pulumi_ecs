@@ -47,14 +47,36 @@ func main() {
 			then create the autoscaling group
 			then create the capacity provider
 		*/
+		clusterSecurityGroupIds := pulumi.StringArray{
+			pulumi.String("sg-0d4bd211820e90b03"),
+		}
 
 		// create a new launch template
 		launchTemplate, err := ec2.NewLaunchTemplate(ctx, "pulumi-ecs-launch-template", &ec2.LaunchTemplateArgs{
-			ImageId:  pulumi.String(parameter.Value),
-			UserData: base64EncodedUserData(cluster),
-			SecurityGroupNames: pulumi.StringArray{
-				pulumi.String("sg-0d4bd211820e90b03"),
+			ImageId:              pulumi.String(parameter.Value),
+			UserData:             base64EncodedUserData(cluster),
+			VpcSecurityGroupIds:  clusterSecurityGroupIds,
+			UpdateDefaultVersion: pulumi.Bool(true),
+			BlockDeviceMappings: ec2.LaunchTemplateBlockDeviceMappingArray{
+				&ec2.LaunchTemplateBlockDeviceMappingArgs{
+					DeviceName: pulumi.String("/dev/xvda"),
+					Ebs: &ec2.LaunchTemplateBlockDeviceMappingEbsArgs{
+						VolumeSize: pulumi.Int(50),
+						VolumeType: pulumi.String("gp3"),
+					},
+				},
 			},
+			NetworkInterfaces: ec2.LaunchTemplateNetworkInterfaceArray{
+				&ec2.LaunchTemplateNetworkInterfaceArgs{
+					AssociatePublicIpAddress: pulumi.String("true"),
+					SecurityGroups:           clusterSecurityGroupIds,
+					DeleteOnTermination:      pulumi.StringPtr("true"),
+				},
+			},
+			IamInstanceProfile: &ec2.LaunchTemplateIamInstanceProfileArgs{
+				Name: pulumi.String("arn:aws:iam::369737379577:instance-profile/ecsInstanceRole"),
+			},
+			KeyName: pulumi.StringPtr("swarnim-dev"),
 		})
 
 		if err != nil {
