@@ -1,6 +1,8 @@
 package main
 
 import (
+	"encoding/base64"
+	"github.com/pulumi/pulumi-aws/sdk/v6/go/aws/ec2"
 	"github.com/pulumi/pulumi-aws/sdk/v6/go/aws/ecs"
 	"github.com/pulumi/pulumi-aws/sdk/v6/go/aws/ssm"
 	"github.com/pulumi/pulumi/sdk/v3/go/pulumi"
@@ -21,10 +23,13 @@ func main() {
 			groups and add them to your ECS cluster.
 		*/
 
-		_, err := ecs.NewCluster(ctx, "pulumi-ecs-cluster", nil)
+		cluster, err := ecs.NewCluster(ctx, "pulumi-ecs-cluster", nil)
 		if err != nil {
 			return err
 		}
+
+		// Output the cluster name
+		ctx.Export("clusterName", cluster.Name)
 
 		// Get the latest Amazon ECS-optimized AMI ID using SSM Parameter
 		parameter, err := ssm.LookupParameter(ctx, &ssm.LookupParameterArgs{
@@ -36,6 +41,37 @@ func main() {
 
 		// Output the latest AMI ID
 		ctx.Export("latestEcsOptimizedAmiId", pulumi.String(parameter.Value))
+
+		/*
+			first create the launch template
+			then create the autoscaling group
+			then create the capacity provider
+		*/
+
+		// create a new launch template
+		launchTemplate, err := ec2.NewLaunchTemplate(ctx, "pulumi-ecs-launch-template", &ec2.LaunchTemplateArgs{
+			ImageId:  pulumi.String(parameter.Value),
+			UserData: base64EncodedUserData(cluster),
+			SecurityGroupNames: pulumi.StringArray{
+				pulumi.String("sg-0d4bd211820e90b03"),
+			},
+		})
+
+		if err != nil {
+			return err
+		}
+
+		// Output the launch template name
+		ctx.Export("launchTemplateName", launchTemplate.Name)
+
 		return nil
 	})
+}
+
+func base64EncodedUserData(cluster *ecs.Cluster) pulumi.StringOutput {
+	encodedUserData := cluster.Name.ApplyT(func(name string) string {
+		userData := "#!/bin/bash\necho ECS_CLUSTER=" + name + " >> /etc/ecs/ecs.config"
+		return base64.StdEncoding.EncodeToString([]byte(userData))
+	}).(pulumi.StringOutput)
+	return encodedUserData
 }
