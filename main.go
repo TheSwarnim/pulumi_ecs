@@ -24,6 +24,7 @@ func main() {
 			groups and add them to your ECS cluster.
 		*/
 
+		// create a new cluster
 		cluster, err := ecs.NewCluster(ctx, "pulumi-ecs-cluster", nil)
 		if err != nil {
 			return err
@@ -132,6 +133,46 @@ func main() {
 
 		// output the autoscaling group name
 		ctx.Export("autoscalingGroupName", autoscalingGroup.Name)
+
+		// create a new capacity provider
+		capacityProvider, err := ecs.NewCapacityProvider(ctx, "pulumi-ecs-capacity-provider", &ecs.CapacityProviderArgs{
+			AutoScalingGroupProvider: &ecs.CapacityProviderAutoScalingGroupProviderArgs{
+				AutoScalingGroupArn: autoscalingGroup.Arn,
+				ManagedScaling: &ecs.CapacityProviderAutoScalingGroupProviderManagedScalingArgs{
+					// Define your managed scaling settings here.
+					MaximumScalingStepSize: pulumi.Int(1000),
+					MinimumScalingStepSize: pulumi.Int(1),
+					Status:                 pulumi.String("ENABLED"),
+					TargetCapacity:         pulumi.Int(75), // Target capacity is specified as a percentage
+				},
+				ManagedTerminationProtection: pulumi.String("DISABLED"),
+			},
+		})
+		if err != nil {
+			return err
+		}
+
+		// output the capacity provider name
+		ctx.Export("capacityProviderName", capacityProvider.Name)
+
+		// Attach the Capacity Provider to the ECS Cluster
+		_, err = ecs.NewClusterCapacityProviders(ctx, "pulumi-ecs-capacity-providers", &ecs.ClusterCapacityProvidersArgs{
+			ClusterName:       cluster.Name,
+			CapacityProviders: pulumi.StringArray{capacityProvider.Name},
+			DefaultCapacityProviderStrategies: ecs.ClusterCapacityProvidersDefaultCapacityProviderStrategyArray{
+				&ecs.ClusterCapacityProvidersDefaultCapacityProviderStrategyArgs{
+					CapacityProvider: capacityProvider.Name,
+					Weight:           pulumi.Int(1),
+					Base:             pulumi.Int(0),
+				},
+			},
+		})
+		if err != nil {
+			return err
+		}
+
+		// Output the ECS cluster name
+		ctx.Export("clusterName", cluster.Name)
 
 		return nil
 	})
