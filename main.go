@@ -2,6 +2,7 @@ package main
 
 import (
 	"encoding/base64"
+	"github.com/pulumi/pulumi-aws/sdk/v6/go/aws/autoscaling"
 	"github.com/pulumi/pulumi-aws/sdk/v6/go/aws/ec2"
 	"github.com/pulumi/pulumi-aws/sdk/v6/go/aws/ecs"
 	"github.com/pulumi/pulumi-aws/sdk/v6/go/aws/ssm"
@@ -53,9 +54,9 @@ func main() {
 
 		// create a new launch template
 		launchTemplate, err := ec2.NewLaunchTemplate(ctx, "pulumi-ecs-launch-template", &ec2.LaunchTemplateArgs{
-			ImageId:              pulumi.String(parameter.Value),
-			UserData:             base64EncodedUserData(cluster),
-			VpcSecurityGroupIds:  clusterSecurityGroupIds,
+			ImageId:  pulumi.String(parameter.Value),
+			UserData: base64EncodedUserData(cluster),
+			//VpcSecurityGroupIds:  clusterSecurityGroupIds,
 			UpdateDefaultVersion: pulumi.Bool(true),
 			BlockDeviceMappings: ec2.LaunchTemplateBlockDeviceMappingArray{
 				&ec2.LaunchTemplateBlockDeviceMappingArgs{
@@ -71,10 +72,11 @@ func main() {
 					AssociatePublicIpAddress: pulumi.String("true"),
 					SecurityGroups:           clusterSecurityGroupIds,
 					DeleteOnTermination:      pulumi.StringPtr("true"),
+					SubnetId:                 pulumi.StringPtr("subnet-0bad1990bdb6919ec"),
 				},
 			},
 			IamInstanceProfile: &ec2.LaunchTemplateIamInstanceProfileArgs{
-				Name: pulumi.String("arn:aws:iam::369737379577:instance-profile/ecsInstanceRole"),
+				Arn: pulumi.String("arn:aws:iam::369737379577:instance-profile/ecsInstanceRole"),
 			},
 			KeyName: pulumi.StringPtr("swarnim-dev"),
 		})
@@ -85,6 +87,51 @@ func main() {
 
 		// Output the launch template name
 		ctx.Export("launchTemplateName", launchTemplate.Name)
+
+		//create a new autoscaling group
+		clusterSubnetIds := pulumi.StringArray{
+			pulumi.String("subnet-027691384e95e1c10"),
+			pulumi.String("subnet-0bad1990bdb6919ec"),
+			pulumi.String("subnet-04fcf156adfca726e"),
+		}
+
+		autoscalingGroup, err := autoscaling.NewGroup(ctx, "pulumi-ecs-autoscaling-group", &autoscaling.GroupArgs{
+			VpcZoneIdentifiers: clusterSubnetIds,
+			DesiredCapacity:    pulumi.Int(1),
+			MaxSize:            pulumi.Int(5),
+			MinSize:            pulumi.Int(1),
+			//LaunchTemplate: &autoscaling.GroupLaunchTemplateArgs{ // either we define this if the launch template has instance type defined, or we define the mixed instances policy
+			//	Id: launchTemplate.ID(),
+			//},
+			DesiredCapacityType: pulumi.StringPtr("units"),
+			MixedInstancesPolicy: &autoscaling.GroupMixedInstancesPolicyArgs{
+				InstancesDistribution: &autoscaling.GroupMixedInstancesPolicyInstancesDistributionArgs{
+					SpotAllocationStrategy: pulumi.StringPtr("price-capacity-optimized"),
+				},
+				LaunchTemplate: &autoscaling.GroupMixedInstancesPolicyLaunchTemplateArgs{
+					LaunchTemplateSpecification: &autoscaling.GroupMixedInstancesPolicyLaunchTemplateLaunchTemplateSpecificationArgs{
+						LaunchTemplateId: launchTemplate.ID(),
+					},
+					Overrides: &autoscaling.GroupMixedInstancesPolicyLaunchTemplateOverrideArray{
+						&autoscaling.GroupMixedInstancesPolicyLaunchTemplateOverrideArgs{
+							InstanceType: pulumi.String("c6i.large"),
+						},
+						&autoscaling.GroupMixedInstancesPolicyLaunchTemplateOverrideArgs{
+							InstanceType: pulumi.String("c6i.xlarge"),
+						},
+						&autoscaling.GroupMixedInstancesPolicyLaunchTemplateOverrideArgs{
+							InstanceType: pulumi.String("c6i.2xlarge"),
+						},
+						&autoscaling.GroupMixedInstancesPolicyLaunchTemplateOverrideArgs{
+							InstanceType: pulumi.String("c6i.4xlarge"),
+						},
+					},
+				},
+			},
+		})
+
+		// output the autoscaling group name
+		ctx.Export("autoscalingGroupName", autoscalingGroup.Name)
 
 		return nil
 	})
