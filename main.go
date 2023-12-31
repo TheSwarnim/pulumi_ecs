@@ -3,6 +3,8 @@ package main
 import (
 	ecs2 "ecs/ecs"
 	"ecs/utils"
+	"github.com/pulumi/pulumi-aws/sdk/v6/go/aws/alb"
+	"github.com/pulumi/pulumi-aws/sdk/v6/go/aws/ecs"
 	"github.com/pulumi/pulumi/sdk/v3/go/pulumi"
 )
 
@@ -76,11 +78,86 @@ func main() {
 		}
 
 		// create a new capacity provider
-		err = ecs2.NewCapacityProvider(ctx, &ecs2.EcsCapacityProvider{
+		capacityProvider, err := ecs2.NewCapacityProvider(ctx, &ecs2.EcsCapacityProvider{
 			Name:             "pulumi-ecs-capacity-provider",
 			Cluster:          cluster,
 			AutoScalingGroup: autoscalingGroup,
 		})
+
+		clusterVpcId := pulumi.StringPtr("vpc-01c036ec9248fed3a")
+
+		// Create an Application Load Balancer.
+		loadBalancer, err := alb.NewLoadBalancer(ctx, "redash-service-alb", &alb.LoadBalancerArgs{
+			Subnets:        clusterSubnetIds,
+			SecurityGroups: clusterSecurityGroupIds,
+		})
+		if err != nil {
+			return err
+		}
+
+		// Create a target group.
+		targetGroup, err := alb.NewTargetGroup(ctx, "redash-service-tg", &alb.TargetGroupArgs{
+			Port:       pulumi.Int(80),
+			Protocol:   pulumi.String("HTTP"),
+			VpcId:      clusterVpcId,
+			TargetType: pulumi.String("instance"),
+			HealthCheck: &alb.TargetGroupHealthCheckArgs{
+				HealthyThreshold:   pulumi.Int(3),
+				Interval:           pulumi.Int(30),
+				Timeout:            pulumi.Int(25),
+				UnhealthyThreshold: pulumi.Int(2),
+				Matcher:            pulumi.StringPtr("200-399"),
+			},
+		})
+		if err != nil {
+			return err
+		}
+
+		// Create a listener for the load balancer.
+		_, err = alb.NewListener(ctx, "redash-server-app-listener", &alb.ListenerArgs{
+			LoadBalancerArn: loadBalancer.Arn,
+			Port:            pulumi.Int(80),
+			DefaultActions: alb.ListenerDefaultActionArray{
+				&alb.ListenerDefaultActionArgs{
+					Type:           pulumi.String("forward"),
+					TargetGroupArn: targetGroup.Arn,
+				},
+			},
+		})
+		if err != nil {
+			return err
+		}
+
+		// output the capacity provider name
+		ctx.Export("capacityProviderName", capacityProvider.Name)
+
+		// Set up the ECS Service using the Capacity Provider
+		service, err := ecs.NewService(ctx, "pulumi-redash-server", &ecs.ServiceArgs{
+			Cluster:        cluster.Arn,
+			TaskDefinition: pulumi.StringPtr("arn:aws:ecs:ap-south-1:369737379577:task-definition/redash-server:5"),
+			DesiredCount:   pulumi.Int(2),
+			CapacityProviderStrategies: ecs.ServiceCapacityProviderStrategyArray{
+				&ecs.ServiceCapacityProviderStrategyArgs{
+					CapacityProvider: capacityProvider.Name,
+					Weight:           pulumi.Int(100),
+					// Optional: specify weight or base as appropriate
+				},
+			},
+			//LaunchType: pulumi.String("EC2"), // either define launch type or capacity provider strategies
+			LoadBalancers: ecs.ServiceLoadBalancerArray{
+				&ecs.ServiceLoadBalancerArgs{
+					TargetGroupArn: targetGroup.Arn,
+					ContainerName:  pulumi.String("redash-server"), // Replace with your actual container name
+					ContainerPort:  pulumi.Int(5000),               // Replace with your actual container port
+				},
+			},
+		})
+		if err != nil {
+			return err
+		}
+
+		// print ecs service name
+		ctx.Export("ecsServiceName", service.Name)
 
 		return nil
 	})

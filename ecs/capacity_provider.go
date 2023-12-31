@@ -12,7 +12,7 @@ type EcsCapacityProvider struct {
 	AutoScalingGroup *autoscaling.Group
 }
 
-func NewCapacityProvider(ctx *pulumi.Context, ecsCapacityProvider *EcsCapacityProvider) error {
+func NewCapacityProvider(ctx *pulumi.Context, ecsCapacityProvider *EcsCapacityProvider) (*ecs.CapacityProvider, error) {
 	// create a new capacity provider
 	capacityProvider, err := ecs.NewCapacityProvider(ctx, ecsCapacityProvider.Name, &ecs.CapacityProviderArgs{
 		AutoScalingGroupProvider: &ecs.CapacityProviderAutoScalingGroupProviderArgs{
@@ -28,7 +28,7 @@ func NewCapacityProvider(ctx *pulumi.Context, ecsCapacityProvider *EcsCapacityPr
 		},
 	})
 	if err != nil {
-		return err
+		return nil, err
 	}
 
 	// Attach the Capacity Provider to the ECS Cluster
@@ -44,8 +44,8 @@ func NewCapacityProvider(ctx *pulumi.Context, ecsCapacityProvider *EcsCapacityPr
 		},
 	})
 	if err != nil {
-		return err
+		return nil, err
 	}
 
-	return nil
+	return capacityProvider, nil
 }
