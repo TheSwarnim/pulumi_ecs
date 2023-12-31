@@ -1,11 +1,8 @@
 package main
 
 import (
-	"encoding/base64"
-	"github.com/pulumi/pulumi-aws/sdk/v6/go/aws/autoscaling"
-	"github.com/pulumi/pulumi-aws/sdk/v6/go/aws/ec2"
-	"github.com/pulumi/pulumi-aws/sdk/v6/go/aws/ecs"
-	"github.com/pulumi/pulumi-aws/sdk/v6/go/aws/ssm"
+	ecs2 "ecs/ecs"
+	"ecs/utils"
 	"github.com/pulumi/pulumi/sdk/v3/go/pulumi"
 )
 
@@ -25,24 +22,13 @@ func main() {
 		*/
 
 		// create a new cluster
-		cluster, err := ecs.NewCluster(ctx, "pulumi-ecs-cluster", nil)
+		cluster, err := ecs2.NewCluster(ctx)
 		if err != nil {
 			return err
 		}
-
-		// Output the cluster name
-		ctx.Export("clusterName", cluster.Name)
 
 		// Get the latest Amazon ECS-optimized AMI ID using SSM Parameter
-		parameter, err := ssm.LookupParameter(ctx, &ssm.LookupParameterArgs{
-			Name: "/aws/service/ecs/optimized-ami/amazon-linux-2023/recommended/image_id", // Replace with your parameter name
-		})
-		if err != nil {
-			return err
-		}
-
-		// Output the latest AMI ID
-		ctx.Export("latestEcsOptimizedAmiId", pulumi.String(parameter.Value))
+		amiID, err := utils.GetLatestEcsOptimizedAmiId(ctx)
 
 		/*
 			first create the launch template
@@ -54,40 +40,20 @@ func main() {
 		}
 
 		// create a new launch template
-		launchTemplate, err := ec2.NewLaunchTemplate(ctx, "pulumi-ecs-launch-template", &ec2.LaunchTemplateArgs{
-			ImageId:  pulumi.String(parameter.Value),
-			UserData: base64EncodedUserData(cluster),
-			//VpcSecurityGroupIds:  clusterSecurityGroupIds,
-			UpdateDefaultVersion: pulumi.Bool(true),
-			BlockDeviceMappings: ec2.LaunchTemplateBlockDeviceMappingArray{
-				&ec2.LaunchTemplateBlockDeviceMappingArgs{
-					DeviceName: pulumi.String("/dev/xvda"),
-					Ebs: &ec2.LaunchTemplateBlockDeviceMappingEbsArgs{
-						VolumeSize: pulumi.Int(50),
-						VolumeType: pulumi.String("gp3"),
-					},
-				},
-			},
-			NetworkInterfaces: ec2.LaunchTemplateNetworkInterfaceArray{
-				&ec2.LaunchTemplateNetworkInterfaceArgs{
-					AssociatePublicIpAddress: pulumi.String("true"),
-					SecurityGroups:           clusterSecurityGroupIds,
-					DeleteOnTermination:      pulumi.StringPtr("true"),
-					SubnetId:                 pulumi.StringPtr("subnet-0bad1990bdb6919ec"),
-				},
-			},
-			IamInstanceProfile: &ec2.LaunchTemplateIamInstanceProfileArgs{
-				Arn: pulumi.String("arn:aws:iam::369737379577:instance-profile/ecsInstanceRole"),
-			},
-			KeyName: pulumi.StringPtr("swarnim-dev"),
+		launchTemplate, err := ecs2.NewLaunchTemplate(ctx, &ecs2.EcsLaunchTemplate{
+			Name:                          "pulumi-ecs-launch-template",
+			Cluster:                       cluster,
+			AmiID:                         amiID,
+			VolumeSize:                    50,
+			VolumeType:                    "gp3",
+			NetworkInterfaceSecurityGroup: clusterSecurityGroupIds,
+			NetworkInterfaceSubnetID:      pulumi.StringPtr("subnet-0bad1990bdb6919ec"),
+			InstanceProfileArn:            pulumi.StringPtr("arn:aws:iam::369737379577:instance-profile/ecsInstanceRole"),
+			KeyName:                       pulumi.StringPtr("swarnim-dev"),
 		})
-
 		if err != nil {
 			return err
 		}
-
-		// Output the launch template name
-		ctx.Export("launchTemplateName", launchTemplate.Name)
 
 		//create a new autoscaling group
 		clusterSubnetIds := pulumi.StringArray{
@@ -96,92 +62,26 @@ func main() {
 			pulumi.String("subnet-04fcf156adfca726e"),
 		}
 
-		autoscalingGroup, err := autoscaling.NewGroup(ctx, "pulumi-ecs-autoscaling-group", &autoscaling.GroupArgs{
+		autoscalingGroup, err := ecs2.NewAutoScalingGroup(ctx, &ecs2.EcsAutoScalingGroup{
+			Name:               "pulumi-ecs-autoscaling-group",
+			Cluster:            cluster,
 			VpcZoneIdentifiers: clusterSubnetIds,
 			DesiredCapacity:    pulumi.Int(1),
 			MaxSize:            pulumi.Int(5),
 			MinSize:            pulumi.Int(1),
-			//LaunchTemplate: &autoscaling.GroupLaunchTemplateArgs{ // either we define this if the launch template has instance type defined, or we define the mixed instances policy
-			//	Id: launchTemplate.ID(),
-			//},
-			DesiredCapacityType: pulumi.StringPtr("units"),
-			MixedInstancesPolicy: &autoscaling.GroupMixedInstancesPolicyArgs{
-				InstancesDistribution: &autoscaling.GroupMixedInstancesPolicyInstancesDistributionArgs{
-					SpotAllocationStrategy: pulumi.StringPtr("price-capacity-optimized"),
-				},
-				LaunchTemplate: &autoscaling.GroupMixedInstancesPolicyLaunchTemplateArgs{
-					LaunchTemplateSpecification: &autoscaling.GroupMixedInstancesPolicyLaunchTemplateLaunchTemplateSpecificationArgs{
-						LaunchTemplateId: launchTemplate.ID(),
-					},
-					Overrides: &autoscaling.GroupMixedInstancesPolicyLaunchTemplateOverrideArray{
-						&autoscaling.GroupMixedInstancesPolicyLaunchTemplateOverrideArgs{
-							InstanceType: pulumi.String("c6i.large"),
-						},
-						&autoscaling.GroupMixedInstancesPolicyLaunchTemplateOverrideArgs{
-							InstanceType: pulumi.String("c6i.xlarge"),
-						},
-						&autoscaling.GroupMixedInstancesPolicyLaunchTemplateOverrideArgs{
-							InstanceType: pulumi.String("c6i.2xlarge"),
-						},
-						&autoscaling.GroupMixedInstancesPolicyLaunchTemplateOverrideArgs{
-							InstanceType: pulumi.String("c6i.4xlarge"),
-						},
-					},
-				},
-			},
+			LaunchTemplate:     launchTemplate,
 		})
-
-		// output the autoscaling group name
-		ctx.Export("autoscalingGroupName", autoscalingGroup.Name)
+		if err != nil {
+			return err
+		}
 
 		// create a new capacity provider
-		capacityProvider, err := ecs.NewCapacityProvider(ctx, "pulumi-ecs-capacity-provider", &ecs.CapacityProviderArgs{
-			AutoScalingGroupProvider: &ecs.CapacityProviderAutoScalingGroupProviderArgs{
-				AutoScalingGroupArn: autoscalingGroup.Arn,
-				ManagedScaling: &ecs.CapacityProviderAutoScalingGroupProviderManagedScalingArgs{
-					// Define your managed scaling settings here.
-					MaximumScalingStepSize: pulumi.Int(1000),
-					MinimumScalingStepSize: pulumi.Int(1),
-					Status:                 pulumi.String("ENABLED"),
-					TargetCapacity:         pulumi.Int(75), // Target capacity is specified as a percentage
-				},
-				ManagedTerminationProtection: pulumi.String("DISABLED"),
-			},
+		err = ecs2.NewCapacityProvider(ctx, &ecs2.EcsCapacityProvider{
+			Name:             "pulumi-ecs-capacity-provider",
+			Cluster:          cluster,
+			AutoScalingGroup: autoscalingGroup,
 		})
-		if err != nil {
-			return err
-		}
-
-		// output the capacity provider name
-		ctx.Export("capacityProviderName", capacityProvider.Name)
-
-		// Attach the Capacity Provider to the ECS Cluster
-		_, err = ecs.NewClusterCapacityProviders(ctx, "pulumi-ecs-capacity-providers", &ecs.ClusterCapacityProvidersArgs{
-			ClusterName:       cluster.Name,
-			CapacityProviders: pulumi.StringArray{capacityProvider.Name},
-			DefaultCapacityProviderStrategies: ecs.ClusterCapacityProvidersDefaultCapacityProviderStrategyArray{
-				&ecs.ClusterCapacityProvidersDefaultCapacityProviderStrategyArgs{
-					CapacityProvider: capacityProvider.Name,
-					Weight:           pulumi.Int(1),
-					Base:             pulumi.Int(0),
-				},
-			},
-		})
-		if err != nil {
-			return err
-		}
-
-		// Output the ECS cluster name
-		ctx.Export("clusterName", cluster.Name)
 
 		return nil
 	})
-}
-
-func base64EncodedUserData(cluster *ecs.Cluster) pulumi.StringOutput {
-	encodedUserData := cluster.Name.ApplyT(func(name string) string {
-		userData := "#!/bin/bash\necho ECS_CLUSTER=" + name + " >> /etc/ecs/ecs.config"
-		return base64.StdEncoding.EncodeToString([]byte(userData))
-	}).(pulumi.StringOutput)
-	return encodedUserData
 }
